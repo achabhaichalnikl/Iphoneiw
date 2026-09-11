@@ -10,9 +10,12 @@ jobs:
 
     steps:
 
-      - name: Check system
+      - name: Check macOS and Xcode
         run: |
+          echo "===== macOS ====="
           sw_vers
+
+          echo "===== Xcode ====="
           xcodebuild -version
 
       - name: Install ngrok
@@ -21,11 +24,12 @@ jobs:
           ngrok version
 
       - name: Set iOS runtime
+        shell: bash
         run: |
           RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-2"
 
           if ! xcrun simctl list runtimes | grep -q "$RUNTIME"; then
-            echo "Requested iOS runtime not found."
+            echo "Requested iOS runtime was not found."
             echo ""
             echo "Available runtimes:"
             xcrun simctl list runtimes
@@ -34,16 +38,17 @@ jobs:
 
           echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
 
-          echo "Using runtime:"
+          echo "Using:"
           echo "$RUNTIME"
 
       - name: Set iPhone device type
+        shell: bash
         run: |
           DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 
           echo "DEVICE_TYPE=$DEVICE_TYPE" >> "$GITHUB_ENV"
 
-          echo "Using device type:"
+          echo "Using:"
           echo "$DEVICE_TYPE"
 
       - name: Create iPhone Simulator
@@ -51,10 +56,12 @@ jobs:
         run: |
           echo "Creating iPhone 17 Pro..."
 
-          DEVICE_ID=$(xcrun simctl create \
-            "Remote iPhone" \
-            "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" \
-            "$RUNTIME")
+          DEVICE_ID=$(
+            xcrun simctl create \
+              "Remote iPhone" \
+              "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" \
+              "$RUNTIME"
+          )
 
           if [ -z "$DEVICE_ID" ]; then
             echo "ERROR: Simulator creation failed."
@@ -68,15 +75,15 @@ jobs:
           echo "iPhone Simulator Created"
           echo "======================================"
           echo "Device ID: $DEVICE_ID"
-          echo ""
 
       - name: Boot iPhone Simulator
         shell: bash
         run: |
-          echo "Booting simulator..."
+          echo "Booting iPhone Simulator..."
 
-          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" || true
 
+          echo "Opening Simulator..."
           open -a Simulator
 
           echo "Waiting for simulator..."
@@ -85,15 +92,42 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "iPHONE SIMULATOR READY"
+          echo "SIMULATOR READY"
           echo "======================================"
 
-      - name: Configure VNC
+      - name: Check Screen Sharing
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "SCREEN SHARING STATUS"
+          echo "======================================"
+
+          echo ""
+          echo "--- Screen Sharing service ---"
+
+          sudo launchctl print system/com.apple.screensharing || true
+
+          echo ""
+          echo "--- Remote Management status ---"
+
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -status || true
+
+          echo ""
+          echo "--- Current user ---"
+
+          whoami
+
+          echo ""
+          echo "--- Port 5900 before configuration ---"
+
+          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
+
+      - name: Configure macOS VNC
         shell: bash
         run: |
           VNC_PASSWORD="iphone123"
 
-          echo "Enabling macOS Remote Management..."
+          echo "Enabling Remote Management..."
 
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
@@ -104,7 +138,8 @@ jobs:
             -restart -agent \
             -privs -all
 
-          echo "Configuring VNC password..."
+          echo ""
+          echo "Setting VNC password..."
 
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure \
@@ -112,14 +147,18 @@ jobs:
             -setvnclegacy -vnclegacy yes \
             -setvncpw -vncpw "$VNC_PASSWORD"
 
+          echo ""
+          echo "Restarting Screen Sharing..."
+
           sudo launchctl kickstart -k system/com.apple.screensharing || true
 
           sleep 5
 
           echo ""
           echo "======================================"
-          echo "VNC PASSWORD: $VNC_PASSWORD"
+          echo "VNC PASSWORD"
           echo "======================================"
+          echo "$VNC_PASSWORD"
 
       - name: Check VNC
         shell: bash
@@ -127,32 +166,45 @@ jobs:
           echo "Checking port 5900..."
 
           for i in {1..15}; do
+
             if nc -z 127.0.0.1 5900; then
-              echo "VNC PORT 5900 IS OPEN."
+              echo ""
+              echo "======================================"
+              echo "VNC PORT 5900 IS OPEN"
+              echo "======================================"
               exit 0
             fi
 
+            echo "Waiting for VNC..."
             sleep 2
+
           done
 
+          echo ""
           echo "ERROR: VNC port 5900 is not open."
 
-          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
+          echo ""
+          echo "Listening ports:"
+          sudo lsof -iTCP -sTCP:LISTEN || true
 
           exit 1
 
       - name: Configure ngrok
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        shell: bash
         run: |
           if [ -z "$NGROK_AUTHTOKEN" ]; then
             echo "ERROR: NGROK_AUTHTOKEN secret is missing."
+            echo ""
+            echo "Add it in:"
+            echo "Settings -> Secrets and variables -> Actions"
             exit 1
           fi
 
           ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
-          echo "ngrok configured."
+          echo "ngrok configured successfully."
 
       - name: Start ngrok
         env:
@@ -161,15 +213,13 @@ jobs:
         run: |
           echo ""
           echo "=============================================="
-          echo "        iPHONE SIMULATOR REMOTE ACCESS"
+          echo "       iPHONE SIMULATOR REMOTE ACCESS"
           echo "=============================================="
           echo ""
           echo "VNC PASSWORD:"
           echo "iphone123"
           echo ""
-          echo "Starting ngrok..."
-          echo ""
-          echo "Keep this GitHub Action running."
+          echo "Starting ngrok TCP tunnel..."
           echo ""
           echo "=============================================="
           echo ""
