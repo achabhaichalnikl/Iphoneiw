@@ -11,7 +11,7 @@ jobs:
     steps:
 
       # =========================================================
-      # 1. CHECK MACOS SCREEN / REMOTE MANAGEMENT
+      # 1. CHECK SCREEN SHARING
       # =========================================================
       - name: Check Screen Sharing
         shell: bash
@@ -56,6 +56,9 @@ jobs:
           echo "======================================"
 
           xcodebuild -version
+
+          echo ""
+          echo "--- Available runtimes ---"
           xcrun simctl list runtimes
 
 
@@ -71,6 +74,7 @@ jobs:
 
           brew install ngrok
 
+          echo ""
           ngrok version
 
 
@@ -82,12 +86,12 @@ jobs:
         run: |
           RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-2"
 
-          echo "Checking runtime:"
+          echo "Checking:"
           echo "$RUNTIME"
 
           if ! xcrun simctl list runtimes | grep -q "$RUNTIME"; then
             echo ""
-            echo "ERROR: iOS 26.2 runtime was not found."
+            echo "ERROR: iOS 26.2 runtime not found."
             echo ""
             xcrun simctl list runtimes
             exit 1
@@ -109,7 +113,8 @@ jobs:
 
           echo "DEVICE_TYPE=$DEVICE_TYPE" >> "$GITHUB_ENV"
 
-          echo "Using:"
+          echo ""
+          echo "Using device:"
           echo "$DEVICE_TYPE"
 
 
@@ -120,7 +125,7 @@ jobs:
         shell: bash
         run: |
           echo "======================================"
-          echo "CREATING IPHONE"
+          echo "CREATING IPHONE SIMULATOR"
           echo "======================================"
 
           DEVICE_ID=$(xcrun simctl create \
@@ -129,7 +134,7 @@ jobs:
             "$RUNTIME")
 
           if [ -z "$DEVICE_ID" ]; then
-            echo "ERROR: Failed to create simulator."
+            echo "ERROR: Simulator creation failed."
             exit 1
           fi
 
@@ -173,15 +178,17 @@ jobs:
           echo "SIMULATOR STATUS"
           echo "======================================"
 
+          echo ""
+          echo "--- Device ---"
           xcrun simctl list devices | grep "$DEVICE_ID" || true
 
           echo ""
-          echo "Simulator state:"
+          echo "--- Remote iPhone ---"
           xcrun simctl list devices | grep -A2 "Remote iPhone" || true
 
 
       # =========================================================
-      # 9. CONFIGURE REMOTE MANAGEMENT / VNC
+      # 9. CONFIGURE VNC
       # =========================================================
       - name: Configure VNC
         shell: bash
@@ -192,4 +199,69 @@ jobs:
 
           VNC_PASSWORD="iphone123"
 
-          ARD="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/
+          ARD="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+
+          echo ""
+          echo "--- Activating Remote Management ---"
+
+          sudo "$ARD" \
+            -activate \
+            -configure -access -on \
+            -configure -allowAccessFor -allUsers \
+            -configure -users "$USER" \
+            -configure -privs -all \
+            -restart -agent \
+            -privs -all || true
+
+          echo ""
+          echo "--- Configuring VNC password ---"
+
+          sudo "$ARD" \
+            -configure \
+            -clientopts \
+            -setvnclegacy -vnclegacy yes \
+            -setvncpw -vncpw "$VNC_PASSWORD" || true
+
+          echo ""
+          echo "--- Restarting Remote Management ---"
+
+          sudo launchctl kickstart -k system/com.apple.RemoteManagement || true
+
+          sudo launchctl kickstart -k system/com.apple.screensharing || true
+
+          sleep 5
+
+          echo ""
+          echo "VNC PASSWORD: $VNC_PASSWORD"
+
+
+      # =========================================================
+      # 10. CHECK VNC
+      # =========================================================
+      - name: Check VNC
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "CHECKING VNC"
+          echo "======================================"
+
+          for i in {1..20}; do
+            echo "Attempt $i/20..."
+
+            if nc -z 127.0.0.1 5900; then
+              echo ""
+              echo "======================================"
+              echo "VNC PORT 5900 IS OPEN"
+              echo "======================================"
+
+              echo ""
+              echo "--- Listening process ---"
+              sudo lsof -nP -iTCP:5900 -sTCP:LISTEN || true
+
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+         
