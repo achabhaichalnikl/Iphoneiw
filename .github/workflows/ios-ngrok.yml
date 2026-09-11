@@ -6,15 +6,20 @@ on:
 jobs:
   ios-vnc:
     runs-on: macos-26
-
     timeout-minutes: 360
 
     steps:
 
-      - name: Check macOS
+      - name: Check macOS and Xcode
         run: |
+          echo "===== macOS ====="
           sw_vers
+
+          echo "===== Xcode ====="
           xcodebuild -version
+
+          echo "===== iOS Runtimes ====="
+          xcrun simctl list runtimes available
 
       - name: Install ngrok
         run: |
@@ -24,13 +29,12 @@ jobs:
       - name: Find iOS runtime
         shell: bash
         run: |
-          echo "Available iOS runtimes:"
-          xcrun simctl list runtimes available
-
-          RUNTIME=$(xcrun simctl list runtimes available |
+          RUNTIME=$(
+            xcrun simctl list runtimes available |
             grep -E 'iOS [0-9]+\.[0-9]+' |
             head -1 |
-            sed -E 's/.*(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+).*/\1/')
+            sed -E 's/.*(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+).*/\1/'
+          )
 
           if [ -z "$RUNTIME" ]; then
             echo "ERROR: No iOS runtime found."
@@ -39,40 +43,67 @@ jobs:
 
           echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
 
+          echo "Using iOS runtime:"
+          echo "$RUNTIME"
+
       - name: Find iPhone device type
         shell: bash
         run: |
-          DEVICE_TYPE=$(xcrun simctl list devicetypes |
-            grep -E 'iPhone [0-9]+' |
-            head -1 |
-            sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
+          DEVICE_TYPE=$(
+            xcrun simctl list devicetypes |
+            grep "iPhone 17 Pro (" |
+            sed -E 's/.*(com\.apple\.CoreSimulator\.SimDeviceType\.[^)]+).*/\1/' |
+            head -1
+          )
 
           if [ -z "$DEVICE_TYPE" ]; then
-            echo "ERROR: No iPhone device type found."
+            echo "iPhone 17 Pro not found."
+
+            echo "Available iPhones:"
+            xcrun simctl list devicetypes | grep iPhone
+
             exit 1
           fi
 
           echo "DEVICE_TYPE=$DEVICE_TYPE" >> "$GITHUB_ENV"
 
+          echo "Using device type:"
+          echo "$DEVICE_TYPE"
+
       - name: Create iPhone Simulator
+        shell: bash
         run: |
-          DEVICE_ID=$(xcrun simctl create \
-            "Remote iPhone" \
-            "$DEVICE_TYPE" \
-            "$RUNTIME")
+          DEVICE_ID=$(
+            xcrun simctl create \
+              "Remote iPhone" \
+              "$DEVICE_TYPE" \
+              "$RUNTIME"
+          )
+
+          if [ -z "$DEVICE_ID" ]; then
+            echo "ERROR: Failed to create simulator."
+            exit 1
+          fi
 
           echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
 
-          echo "Created simulator:"
+          echo "================================"
+          echo "Created iPhone 17 Pro"
+          echo "Device ID:"
           echo "$DEVICE_ID"
+          echo "================================"
 
       - name: Boot iPhone Simulator
+        shell: bash
         run: |
+          echo "Booting iPhone Simulator..."
+
           xcrun simctl boot "$DEVICE_ID" || true
 
+          echo "Opening Simulator..."
           open -a Simulator
 
-          echo "Waiting for iPhone Simulator..."
+          echo "Waiting for simulator to finish booting..."
 
           xcrun simctl bootstatus "$DEVICE_ID" -b
 
@@ -80,73 +111,7 @@ jobs:
           echo "iPhone Simulator is READY"
           echo "================================"
 
-      - name: Enable macOS VNC
+      - name: Configure macOS VNC
         shell: bash
         run: |
-
-          VNC_PASSWORD="iphone123"
-
-          echo "Enabling Remote Management..."
-
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate \
-            -configure -access -on \
-            -configure -allowAccessFor -allUsers \
-            -configure -users "$USER" \
-            -configure -privs -all \
-            -restart -agent \
-            -privs -all
-
-          echo "Setting VNC password..."
-
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure \
-            -clientopts \
-            -setvnclegacy -vnclegacy yes \
-            -setvncpw -vncpw "$VNC_PASSWORD"
-
-          sudo launchctl kickstart -k system/com.apple.screensharing || true
-
-          sleep 5
-
-          echo "Checking VNC..."
-
-          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
-
-      - name: Verify VNC port
-        run: |
-          for i in {1..10}; do
-            if nc -z 127.0.0.1 5900; then
-              echo "VNC port 5900 is OPEN."
-              exit 0
-            fi
-
-            echo "Waiting for VNC..."
-            sleep 2
-          done
-
-          echo "ERROR: VNC port 5900 did not open."
-          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
-          exit 1
-
-      - name: Start ngrok TCP tunnel
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-        run: |
-
-          if [ -z "$NGROK_AUTHTOKEN" ]; then
-            echo "ERROR: NGROK_AUTHTOKEN secret is missing."
-            exit 1
-          fi
-
-          echo ""
-          echo "=============================================="
-          echo "STARTING NGROK TCP TUNNEL"
-          echo "=============================================="
-          echo ""
-
-          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
-
-          echo "Starting tunnel to VNC port 5900..."
-
-          ngrok tcp 5900
+          VNC_PASSWORD
