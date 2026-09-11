@@ -1,0 +1,152 @@
+name: iPhone Simulator - ngrok VNC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ios-vnc:
+    runs-on: macos-26
+
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Check macOS
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Install ngrok
+        run: |
+          brew install ngrok
+          ngrok version
+
+      - name: Find iOS runtime
+        shell: bash
+        run: |
+          echo "Available iOS runtimes:"
+          xcrun simctl list runtimes available
+
+          RUNTIME=$(xcrun simctl list runtimes available |
+            grep -E 'iOS [0-9]+\.[0-9]+' |
+            head -1 |
+            sed -E 's/.*(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+).*/\1/')
+
+          if [ -z "$RUNTIME" ]; then
+            echo "ERROR: No iOS runtime found."
+            exit 1
+          fi
+
+          echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
+
+      - name: Find iPhone device type
+        shell: bash
+        run: |
+          DEVICE_TYPE=$(xcrun simctl list devicetypes |
+            grep -E 'iPhone [0-9]+' |
+            head -1 |
+            sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
+
+          if [ -z "$DEVICE_TYPE" ]; then
+            echo "ERROR: No iPhone device type found."
+            exit 1
+          fi
+
+          echo "DEVICE_TYPE=$DEVICE_TYPE" >> "$GITHUB_ENV"
+
+      - name: Create iPhone Simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl create \
+            "Remote iPhone" \
+            "$DEVICE_TYPE" \
+            "$RUNTIME")
+
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+
+          echo "Created simulator:"
+          echo "$DEVICE_ID"
+
+      - name: Boot iPhone Simulator
+        run: |
+          xcrun simctl boot "$DEVICE_ID" || true
+
+          open -a Simulator
+
+          echo "Waiting for iPhone Simulator..."
+
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+          echo "================================"
+          echo "iPhone Simulator is READY"
+          echo "================================"
+
+      - name: Enable macOS VNC
+        shell: bash
+        run: |
+
+          VNC_PASSWORD="iphone123"
+
+          echo "Enabling Remote Management..."
+
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate \
+            -configure -access -on \
+            -configure -allowAccessFor -allUsers \
+            -configure -users "$USER" \
+            -configure -privs -all \
+            -restart -agent \
+            -privs -all
+
+          echo "Setting VNC password..."
+
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure \
+            -clientopts \
+            -setvnclegacy -vnclegacy yes \
+            -setvncpw -vncpw "$VNC_PASSWORD"
+
+          sudo launchctl kickstart -k system/com.apple.screensharing || true
+
+          sleep 5
+
+          echo "Checking VNC..."
+
+          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
+
+      - name: Verify VNC port
+        run: |
+          for i in {1..10}; do
+            if nc -z 127.0.0.1 5900; then
+              echo "VNC port 5900 is OPEN."
+              exit 0
+            fi
+
+            echo "Waiting for VNC..."
+            sleep 2
+          done
+
+          echo "ERROR: VNC port 5900 did not open."
+          sudo lsof -iTCP:5900 -sTCP:LISTEN || true
+          exit 1
+
+      - name: Start ngrok TCP tunnel
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+
+          if [ -z "$NGROK_AUTHTOKEN" ]; then
+            echo "ERROR: NGROK_AUTHTOKEN secret is missing."
+            exit 1
+          fi
+
+          echo ""
+          echo "=============================================="
+          echo "STARTING NGROK TCP TUNNEL"
+          echo "=============================================="
+          echo ""
+
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+
+          echo "Starting tunnel to VNC port 5900..."
+
+          ngrok tcp 5900
